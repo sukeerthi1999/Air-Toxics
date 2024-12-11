@@ -1,0 +1,227 @@
+---
+title: "Mortality-project"
+author: "Manisha"
+date: "2024-12-10"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+```
+
+## R Markdown
+
+
+```{r}
+install.packages("DBI")
+install.packages("odbc")
+library(DBI)
+library(odbc)
+```
+
+
+
+```{r}
+# Load necessary libraries
+install.packages("DBI")
+install.packages("odbc")
+
+library(DBI)
+library(odbc)
+
+# Establish a connection to the .mdb file
+conn <- dbConnect(odbc::odbc(),
+                  Driver = "Microsoft Access Driver (*.mdb, *.accdb)",
+                  DBQ = "C:/Users/sande/Downloads/ConcExpRisk_tract_poll_WA.mdb")
+
+# List available tables to verify table names
+tables <- dbListTables(conn)
+print(tables)
+
+# Read the "Ambient Concentration (ug/m3)" table
+ambient_data <- dbGetQuery(conn, 'SELECT * FROM "Ambient Concentration (ug/m3)"')
+
+# Read the "Cancer Risk (in a million) and Noncancer Risk (hazard quotient)" table
+cancer_risk_data <- dbGetQuery(conn, 'SELECT * FROM "Cancer Risk (in a million) and Noncancer Risk (hazard quotient)"')
+
+# Read the "Exposure Concentration (ug/m3)" table
+exposure_data <- dbGetQuery(conn, 'SELECT * FROM "Exposure Concentration (ug/m3)"')
+
+# Save the data to CSV files
+write.csv(ambient_data, "Ambient_Concentration.csv", row.names = FALSE)
+write.csv(cancer_risk_data, "Cancer_Risk.csv", row.names = FALSE)
+write.csv(exposure_data, "Exposure_Concentration.csv", row.names = FALSE)
+
+# Close the database connection
+dbDisconnect(conn)
+
+# Print a success message
+cat("Data has been successfully exported to CSV files!\n")
+```
+
+```{r}
+# Read the Ambient Concentration CSV file
+ambient_data <- read.csv("Ambient_Concentration.csv")
+
+# View the structure of the data
+str(ambient_data)
+
+# Display the first few rows
+head(ambient_data)
+```
+```{r}
+# Install required packages
+install.packages("tidyverse")
+install.packages("caret")
+install.packages("randomForest")
+install.packages("e1071")
+
+# Load libraries
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(e1071)
+```
+```{r}
+# Load Ambient Concentration data
+ambient_data <- read.csv("Ambient_Concentration.csv")
+
+# Load respiratory data
+respiratory_data <- read.csv("C:/Users/sande/Downloads/respiratory(in).csv")
+
+# Merge datasets using the "Tract" column
+merged_data <- ambient_data %>%
+  inner_join(respiratory_data, by = "Tract")
+
+# Check the structure of the merged dataset
+str(merged_data)
+```
+```{r}
+colnames(merged_data)
+```
+
+```{r}
+# Prepare the dataset with relevant columns
+ml_data <- merged_data %>%
+  select(
+    age,                   # Outcome variable
+    Total_Conc = Total.Conc, # Exposure to air toxics
+    Population,             # Demographic feature
+    County,                 # Geographic feature
+    sex,                    # Demographic feature
+    race,                   # Demographic feature
+    education,              # Demographic feature
+    marital                 # Demographic feature
+  ) %>%
+  drop_na()  # Remove rows with missing values
+
+# Convert categorical variables to factors
+ml_data$County <- as.factor(ml_data$County)
+ml_data$sex <- as.factor(ml_data$sex)
+ml_data$race <- as.factor(ml_data$race)
+ml_data$education <- as.factor(ml_data$education)
+ml_data$marital <- as.factor(ml_data$marital)
+
+# View the structure of the prepared dataset
+str(ml_data)
+```
+
+```{r}
+set.seed(123)  # For reproducibility
+train_index <- createDataPartition(ml_data$age, p = 0.8, list = FALSE)
+train_data <- ml_data[train_index, ]
+test_data <- ml_data[-train_index, ]
+```
+
+```{r}
+install.packages("xgboost")
+library(xgboost)
+
+# Convert data to matrix format for xgboost
+train_matrix <- model.matrix(age ~ . - 1, data = train_data)
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_data$age)
+
+# Train xgboost model
+xgb_model <- xgboost(data = dtrain, max_depth = 6, eta = 0.1, nrounds = 50, objective = "reg:squarederror")
+```
+```{r}
+# Convert test data to matrix format
+test_matrix <- model.matrix(age ~ . - 1, data = test_data)
+
+# Predict on test data
+predictions <- predict(xgb_model, newdata = test_matrix)
+```
+
+```{r}
+# Calculate MAE
+mae <- mean(abs(predictions - test_data$age))
+
+# Calculate RMSE
+rmse <- sqrt(mean((predictions - test_data$age)^2))
+
+# Print results
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Square Error (RMSE):", rmse, "\n")
+```
+```{r}
+importance_matrix <- xgb.importance(model = xgb_model, feature_names = colnames(train_matrix))
+print(importance_matrix)
+```
+
+```{r}
+xgb.plot.importance(importance_matrix, main = "Feature Importance", rel_to_first = TRUE)
+```
+
+```{r}
+plot(test_data$age, predictions, 
+     xlab = "Actual Age", ylab = "Predicted Age", 
+     main = "Actual vs Predicted Age", col = "blue", pch = 16)
+abline(0, 1, col = "red", lwd = 2)  # Ideal prediction line
+```
+```{r}
+residuals <- test_data$age - predictions
+plot(predictions, residuals, 
+     xlab = "Predicted Age", ylab = "Residuals", 
+     main = "Residual Plot", col = "darkgreen", pch = 16)
+abline(h = 0, col = "red", lwd = 2)
+```
+```{r}
+param_grid <- list(max_depth = c(4, 6, 8), eta = c(0.01, 0.1, 0.2))
+xgb_tuned <- xgb.cv(params = param_grid,
+                    data = dtrain,
+                    nfold = 5,
+                    nrounds = 50,
+                    objective = "reg:squarederror")
+```
+
+```{r}
+param_grid <- list(
+  max_depth = c(4, 6, 8),
+  eta = c(0.01, 0.1, 0.2),
+  subsample = c(0.8, 1),
+  colsample_bytree = c(0.8, 1)
+)
+
+# Grid search using xgb.cv
+cv_results <- xgb.cv(
+  params = list(
+    max_depth = 6,
+    eta = 0.1,
+    subsample = 0.8,
+    colsample_bytree = 0.8,
+    objective = "reg:squarederror"
+  ),
+  data = dtrain,
+  nfold = 5,
+  nrounds = 100,
+  verbose = TRUE,
+  early_stopping_rounds = 10
+)
+
+# Print best number of rounds
+print(cv_results$best_iteration)
+```
